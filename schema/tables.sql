@@ -587,6 +587,21 @@ CREATE TABLE `zhihu_creator` (
     UNIQUE KEY `idx_zhihu_creator_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='知乎创作者';
 
+-- ----------------------------
+-- Table structure for twitter_note
+-- ----------------------------
+DROP TABLE IF EXISTS `twitter_note`;
+CREATE TABLE `twitter_note` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `tweet_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `user_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `text` text CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
+  `created_at` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
+  `add_ts` bigint(20) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `tweet_id` (`tweet_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 
 -- add column `like_count` to douyin_aweme_comment
 alter table douyin_aweme_comment add column `like_count` varchar(255) NOT NULL DEFAULT '0' COMMENT '点赞数';
