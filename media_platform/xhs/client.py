@@ -483,6 +483,7 @@ class XiaoHongShuClient(AbstractApiClient):
         user_id: str,
         crawl_interval: float = 1.0,
         callback: Optional[Callable] = None,
+        start_cursor: str = ""
     ) -> List[Dict]:
         """
         获取指定用户下的所有发过的帖子，该方法会一直查找一个用户下的所有帖子信息
@@ -490,13 +491,14 @@ class XiaoHongShuClient(AbstractApiClient):
             user_id: 用户ID
             crawl_interval: 爬取一次的延迟单位（秒）
             callback: 一次分页爬取结束后的更新回调函数
+            start_cursor: 起始游标
 
         Returns:
 
         """
         result = []
         notes_has_more = True
-        notes_cursor = ""
+        notes_cursor = start_cursor
         while notes_has_more and len(result) < config.CRAWLER_MAX_NOTES_COUNT:
             notes_res = await self.get_notes_by_creator(user_id, notes_cursor)
             if not notes_res:

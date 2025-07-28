@@ -122,28 +122,33 @@ class XiaoHongShuCrawler(AbstractCrawler):
 
     async def search(self) -> None:
         """Search for notes and retrieve their comment information."""
+        from tools.progress_manager import load_progress, save_progress
+        progress = await load_progress()
+        if "search" not in progress:
+            progress["search"] = {}
+
         utils.logger.info(
             "[XiaoHongShuCrawler.search] Begin search xiaohongshu keywords"
         )
-        xhs_limit_count = 20  # xhs limit page fixed value
+        xhs_limit_count = 20
         if config.CRAWLER_MAX_NOTES_COUNT < xhs_limit_count:
             config.CRAWLER_MAX_NOTES_COUNT = xhs_limit_count
-        start_page = config.START_PAGE
+
         for keyword in config.KEYWORDS.split(","):
             source_keyword_var.set(keyword)
+            if keyword not in progress["search"]:
+                progress["search"][keyword] = {"page": 1, "note_ids": []}
+
+            start_page = progress["search"][keyword]["page"]
+            page = start_page
+
             utils.logger.info(
-                f"[XiaoHongShuCrawler.search] Current search keyword: {keyword}"
+                f"[XiaoHongShuCrawler.search] Current search keyword: {keyword}, start page: {start_page}"
             )
-            page = 1
             search_id = get_search_id()
             while (
                     page - start_page + 1
             ) * xhs_limit_count <= config.CRAWLER_MAX_NOTES_COUNT:
-                if page < start_page:
-                    utils.logger.info(f"[XiaoHongShuCrawler.search] Skip page {page}")
-                    page += 1
-                    continue
-
                 try:
                     utils.logger.info(
                         f"[XiaoHongShuCrawler.search] search xhs keyword: {keyword}, page: {page}"
@@ -175,16 +180,22 @@ class XiaoHongShuCrawler(AbstractCrawler):
                             semaphore=semaphore,
                         )
                         for post_item in notes_res.get("items", {})
-                        if post_item.get("model_type") not in ("rec_query", "hot_query")
+                        if post_item.get("model_type") not in ("rec_query", "hot_query") and post_item.get("id") not in progress["search"][keyword]["note_ids"]
                     ]
                     note_details = await asyncio.gather(*task_list)
                     for note_detail in note_details:
                         if note_detail:
                             await xhs_store.update_xhs_note(note_detail)
                             await self.get_notice_media(note_detail)
-                            note_ids.append(note_detail.get("note_id"))
+                            note_id = note_detail.get("note_id")
+                            note_ids.append(note_id)
+                            progress["search"][keyword]["note_ids"].append(note_id)
                             xsec_tokens.append(note_detail.get("xsec_token"))
+
                     page += 1
+                    progress["search"][keyword]["page"] = page
+                    await save_progress(progress)
+
                     utils.logger.info(
                         f"[XiaoHongShuCrawler.search] Note details: {note_details}"
                     )
@@ -197,10 +208,20 @@ class XiaoHongShuCrawler(AbstractCrawler):
 
     async def get_creators_and_notes(self) -> None:
         """Get creator's notes and retrieve their comment information."""
+        from tools.progress_manager import load_progress, save_progress
+        progress = await load_progress()
+        if "creator" not in progress:
+            progress["creator"] = {}
+
         utils.logger.info(
             "[XiaoHongShuCrawler.get_creators_and_notes] Begin get xiaohongshu creators"
         )
         for user_id in config.XHS_CREATOR_ID_LIST:
+            if user_id not in progress["creator"]:
+                progress["creator"][user_id] = {"cursor": "", "note_ids": []}
+
+            start_cursor = progress["creator"][user_id]["cursor"]
+
             # get creator detail info from web html content
             createor_info: Dict = await self.xhs_client.get_creator_info(
                 user_id=user_id
@@ -213,11 +234,20 @@ class XiaoHongShuCrawler(AbstractCrawler):
                 crawl_interval = random.random()
             else:
                 crawl_interval = random.uniform(1, config.CRAWLER_MAX_SLEEP_SEC)
+
+            async def save_creator_progress_callback(notes: List[Dict]):
+                new_cursor = notes[-1].get("cursor") if notes else ""
+                if new_cursor:
+                    progress["creator"][user_id]["cursor"] = new_cursor
+                    await save_progress(progress)
+                await self.fetch_creator_notes_detail(notes)
+
             # Get all note information of the creator
             all_notes_list = await self.xhs_client.get_all_notes_by_creator(
                 user_id=user_id,
                 crawl_interval=crawl_interval,
-                callback=self.fetch_creator_notes_detail,
+                callback=save_creator_progress_callback,
+                start_cursor=start_cursor
             )
 
             note_ids = []
