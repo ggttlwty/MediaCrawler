@@ -42,83 +42,128 @@ from .help import parse_note_info_from_note_url, get_search_id
 from .login import XiaoHongShuLogin
 
 
-class XiaoHongShuCrawler(AbstractCrawler):
-    context_page: Page
-    xhs_client: XiaoHongShuClient
-    browser_context: BrowserContext
-    cdp_manager: Optional[CDPBrowserManager]
+from tools.account_manager import AccountManager, Account
 
+
+class XiaoHongShuCrawler(AbstractCrawler):
     def __init__(self) -> None:
         self.index_url = "https://www.xiaohongshu.com"
-        # self.user_agent = utils.get_user_agent()
-        self.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-        self.cdp_manager = None
+        self.account_manager = AccountManager(platform=config.PLATFORM)
 
     async def start(self) -> None:
+        """
+        Start the crawler, this method will create a worker for each concurrent task.
+        """
+        utils.logger.info(f"[XiaoHongShuCrawler.start] Begin start xiaohongshu crawler, CRAWLER_TYPE={config.CRAWLER_TYPE}")
+
+        # Create a semaphore to control the number of concurrent workers
+        semaphore = asyncio.Semaphore(config.MAX_CONCURRENCY_NUM)
+
+        # Create a task queue
+        task_queue = asyncio.Queue()
+
+        # Add tasks to the queue
+        if config.CRAWLER_TYPE == "search":
+            for keyword in config.KEYWORDS.split(","):
+                await task_queue.put(("search", keyword))
+        elif config.CRAWLER_TYPE == "creator":
+            for user_id in config.XHS_CREATOR_ID_LIST:
+                await task_queue.put(("creator", user_id))
+        elif config.CRAWLER_TYPE == "detail":
+             for note_url in config.XHS_SPECIFIED_NOTE_URL_LIST:
+                 await task_queue.put(("detail", note_url))
+
+        # Create worker tasks
+        workers = [
+            asyncio.create_task(self.worker(f"worker-{i}", task_queue, semaphore))
+            for i in range(config.MAX_CONCURRENCY_NUM)
+        ]
+
+        # Wait for all tasks in the queue to be processed
+        await task_queue.join()
+
+        # Cancel worker tasks
+        for worker in workers:
+            worker.cancel()
+
+        await asyncio.gather(*workers, return_exceptions=True)
+        utils.logger.info("[XiaoHongShuCrawler.start] Xhs Crawler finished ...")
+
+    async def worker(self, name: str, queue: asyncio.Queue, semaphore: asyncio.Semaphore):
+        """
+        A worker that fetches tasks from the queue and processes them.
+        """
+        while True:
+            try:
+                async with semaphore:
+                    task_type, task_value = await queue.get()
+                    utils.logger.info(f"[{name}] Got task: {task_type} - {task_value}")
+
+                    account = await self.account_manager.get_account()
+                    if not account:
+                        utils.logger.error(f"[{name}] No available accounts, stopping worker.")
+                        break
+
+                    try:
+                        await self.process_task(account, task_type, task_value)
+                        await self.account_manager.release_account(account)
+                    except Exception as e:
+                        utils.logger.error(f"[{name}] Error processing task {task_type} - {task_value} with account {account.id}: {e}")
+                        # Mark account as banned if a specific exception occurs, otherwise just release it
+                        await self.account_manager.release_account(account, is_banned=isinstance(e, DataFetchError))
+
+                    queue.task_done()
+            except asyncio.CancelledError:
+                break
+
+    async def process_task(self, account: Account, task_type: str, task_value: str):
+        """
+        Process a single task (e.g., search for a keyword, fetch a creator's notes).
+        """
         playwright_proxy_format, httpx_proxy_format = None, None
         if config.ENABLE_IP_PROXY:
-            ip_proxy_pool = await create_ip_pool(
-                config.IP_PROXY_POOL_COUNT, enable_validate_ip=True
-            )
-            ip_proxy_info: IpInfoModel = await ip_proxy_pool.get_proxy()
-            playwright_proxy_format, httpx_proxy_format = self.format_proxy_info(
-                ip_proxy_info
-            )
+            if account.proxy:
+                # Use account-specific proxy
+                ip_proxy_info = utils.parse_proxy_url(account.proxy)
+            else:
+                # Use global proxy pool
+                ip_proxy_pool = await create_ip_pool(config.IP_PROXY_POOL_COUNT, enable_validate_ip=True)
+                ip_proxy_info = await ip_proxy_pool.get_proxy()
+
+            playwright_proxy_format, httpx_proxy_format = self.format_proxy_info(ip_proxy_info)
+
+        user_agent = account.user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
 
         async with async_playwright() as playwright:
-            # 根据配置选择启动模式
-            if config.ENABLE_CDP_MODE:
-                utils.logger.info("[XiaoHongShuCrawler] 使用CDP模式启动浏览器")
-                self.browser_context = await self.launch_browser_with_cdp(
-                    playwright,
-                    playwright_proxy_format,
-                    self.user_agent,
-                    headless=config.CDP_HEADLESS,
-                )
-            else:
-                utils.logger.info("[XiaoHongShuCrawler] 使用标准模式启动浏览器")
-                # Launch a browser context.
-                chromium = playwright.chromium
-                self.browser_context = await self.launch_browser(
-                    chromium,
-                    playwright_proxy_format,
-                    self.user_agent,
-                    headless=config.HEADLESS,
-                )
-            # stealth.min.js is a js script to prevent the website from detecting the crawler.
-            await self.browser_context.add_init_script(path="libs/stealth.min.js")
-            self.context_page = await self.browser_context.new_page()
-            await self.context_page.goto(self.index_url)
+            browser_context = await self.launch_browser(
+                playwright.chromium,
+                playwright_proxy_format,
+                user_agent,
+                headless=config.HEADLESS,
+                user_data_dir_suffix=account.id  # Use account id for separate sessions
+            )
+            context_page = await browser_context.new_page()
+            await context_page.goto(self.index_url)
 
-            # Create a client to interact with the xiaohongshu website.
-            self.xhs_client = await self.create_xhs_client(httpx_proxy_format)
-            if not await self.xhs_client.pong():
+            xhs_client = await self.create_xhs_client(httpx_proxy_format, context_page, account.cookies)
+            if not await xhs_client.pong():
                 login_obj = XiaoHongShuLogin(
-                    login_type=config.LOGIN_TYPE,
-                    login_phone="",  # input your phone number
-                    browser_context=self.browser_context,
-                    context_page=self.context_page,
-                    cookie_str=config.COOKIES,
+                    login_type="cookie", # Force cookie login for workers
+                    browser_context=browser_context,
+                    context_page=context_page,
+                    cookie_str=account.cookies,
                 )
                 await login_obj.begin()
-                await self.xhs_client.update_cookies(
-                    browser_context=self.browser_context
-                )
+                await xhs_client.update_cookies(browser_context)
 
-            crawler_type_var.set(config.CRAWLER_TYPE)
-            if config.CRAWLER_TYPE == "search":
-                # Search for notes and retrieve their comment information.
-                await self.search()
-            elif config.CRAWLER_TYPE == "detail":
-                # Get the information and comments of the specified post
-                await self.get_specified_notes()
-            elif config.CRAWLER_TYPE == "creator":
-                # Get creator's information and their notes and comments
-                await self.get_creators_and_notes()
-            else:
-                pass
+            if task_type == "search":
+                await self.search(keyword=task_value, xhs_client=xhs_client)
+            elif task_type == "creator":
+                await self.get_creators_and_notes(user_id=task_value, xhs_client=xhs_client)
+            elif task_type == "detail":
+                await self.get_specified_notes(note_url=task_value, xhs_client=xhs_client)
 
-            utils.logger.info("[XiaoHongShuCrawler.start] Xhs Crawler finished ...")
+            await browser_context.close()
 
     async def search(self) -> None:
         """Search for notes and retrieve their comment information."""
@@ -462,17 +507,16 @@ class XiaoHongShuCrawler(AbstractCrawler):
             playwright_proxy: Optional[Dict],
             user_agent: Optional[str],
             headless: bool = True,
+            user_data_dir_suffix: str = ""
     ) -> BrowserContext:
         """Launch browser and create browser context"""
         utils.logger.info(
             "[XiaoHongShuCrawler.launch_browser] Begin create browser context ..."
         )
         if config.SAVE_LOGIN_STATE:
-            # feat issue #14
-            # we will save login state to avoid login every time
             user_data_dir = os.path.join(
-                os.getcwd(), "browser_data", config.USER_DATA_DIR % config.PLATFORM
-            )  # type: ignore
+                os.getcwd(), "browser_data", f"{config.PLATFORM}_{user_data_dir_suffix}"
+            )
             browser_context = await chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 accept_downloads=True,
