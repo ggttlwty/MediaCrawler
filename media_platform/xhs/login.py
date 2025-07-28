@@ -165,12 +165,19 @@ class XiaoHongShuLogin(AbstractLogin):
         _, cookie_dict = utils.convert_cookies(current_cookie)
         no_logged_in_session = cookie_dict.get("web_session")
 
-        # show login qrcode
-        # fix issue #12
-        # we need to use partial function to call show_qrcode function and run in executor
-        # then current asyncio event loop will not be blocked
-        partial_show_qrcode = functools.partial(utils.show_qrcode, base64_qrcode_img)
-        asyncio.get_running_loop().run_in_executor(executor=None, func=partial_show_qrcode)
+        # In headless mode, we can't show the QR code directly.
+        # Instead, we print the base64 string to the console.
+        # The user can copy this string to a base64-to-image converter online to scan the code.
+        if config.HEADLESS:
+            utils.logger.info("[XiaoHongShuLogin.login_by_qrcode] Running in headless mode. QR code base64 string:")
+            utils.logger.info(f"Copy the following base64 string to a converter to get the QR code image:\n{base64_qrcode_img}")
+        else:
+            # show login qrcode
+            # fix issue #12
+            # we need to use partial function to call show_qrcode function and run in executor
+            # then current asyncio event loop will not be blocked
+            partial_show_qrcode = functools.partial(utils.show_qrcode, base64_qrcode_img)
+            asyncio.get_running_loop().run_in_executor(executor=None, func=partial_show_qrcode)
 
         utils.logger.info(f"[XiaoHongShuLogin.login_by_qrcode] waiting for scan code login, remaining time is 120s")
         try:

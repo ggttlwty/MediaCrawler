@@ -137,6 +137,32 @@ uv run main.py --platform xhs --lt qrcode --type detail
 
 # 其他平台爬虫使用示例，执行下面的命令查看
 uv run main.py --help
+
+### 🐧 Linux 服务器部署
+
+项目支持在无图形界面的Linux服务器上部署，推荐使用 `cookie` 登录方式。
+
+1.  **一键安装环境**:
+    我们提供了一个便捷的安装脚本来自动化准备所有环境依赖。
+    ```bash
+    # 赋予脚本执行权限
+    chmod +x scripts/setup_linux.sh
+
+    # 运行安装脚本
+    ./scripts/setup_linux.sh
+    ```
+
+2.  **配置修改**:
+    在 `config/base_config.py` 文件中，必须进行以下修改：
+    *   将 `HEADLESS` 设置为 `True`。
+    *   将 `LOGIN_TYPE` 设置为 `"cookie"`。
+    *   在 `COOKIES` 变量中填入你从浏览器获取的有效Cookie字符串。
+
+3.  **运行**:
+    ```bash
+    # 示例：使用cookie方式抓取小红书关键词
+    uv run main.py --platform xhs --lt cookie --type search
+    ```
 ```
 
 <details>
