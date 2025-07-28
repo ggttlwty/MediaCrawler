@@ -29,6 +29,8 @@ from .field import SearchNoteType, SearchSortType
 from .help import get_search_id, sign
 
 
+from .sign import get_sign
+
 class XiaoHongShuClient(AbstractApiClient):
     def __init__(
         self,
@@ -36,8 +38,8 @@ class XiaoHongShuClient(AbstractApiClient):
         proxies=None,
         *,
         headers: Dict[str, str],
-        playwright_page: Page,
         cookie_dict: Dict[str, str],
+        local_storage: Dict[str, str]
     ):
         self.proxies = proxies
         self.timeout = timeout
@@ -48,10 +50,10 @@ class XiaoHongShuClient(AbstractApiClient):
         self.IP_ERROR_CODE = 300012
         self.NOTE_ABNORMAL_STR = "笔记状态异常，请稍后查看"
         self.NOTE_ABNORMAL_CODE = -510001
-        self.playwright_page = playwright_page
         self.cookie_dict = cookie_dict
+        self.local_storage = local_storage
 
-    async def _pre_headers(self, url: str, data=None) -> Dict:
+    def _pre_headers(self, url: str, data=None) -> Dict:
         """
         请求头参数签名
         Args:
@@ -61,15 +63,15 @@ class XiaoHongShuClient(AbstractApiClient):
         Returns:
 
         """
-        encrypt_params = await self.playwright_page.evaluate(
-            "([url, data]) => window._webmsxyw(url,data)", [url, data]
-        )
-        local_storage = await self.playwright_page.evaluate("() => window.localStorage")
+        # This is where the reverse-engineered JS function would be used.
+        # For now, it uses a placeholder.
+        encrypt_params = get_sign(url, data, self.cookie_dict.get("a1", ""), self.local_storage.get("b1", ""))
+
         signs = sign(
             a1=self.cookie_dict.get("a1", ""),
-            b1=local_storage.get("b1", ""),
-            x_s=encrypt_params.get("X-s", ""),
-            x_t=str(encrypt_params.get("X-t", "")),
+            b1=self.local_storage.get("b1", ""),
+            x_s=encrypt_params.get("x-s"),
+            x_t=str(encrypt_params.get("x-t")),
         )
 
         headers = {
